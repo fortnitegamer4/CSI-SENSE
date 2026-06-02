@@ -1,0 +1,22 @@
+Accuracy: 0.867347
+
+               precision    recall  f1-score   support
+
+   brushteeth       1.00      0.95      0.97        20
+         cook       0.87      1.00      0.93        20
+        drink       0.91      0.77      0.83        13
+   getintobed       0.90      0.95      0.93        20
+      nothing       1.00      0.95      0.97        20
+       petcat       0.00      0.00      0.00         0
+sitdown_chair       0.62      0.80      0.70        10
+ sitdown_sofa       0.58      0.64      0.61        11
+     sleeping       0.82      0.90      0.86        20
+standup_chair       0.83      0.50      0.62        10
+ standup_sofa       0.62      0.45      0.53        11
+         test       0.00      0.00      0.00         1
+         walk       1.00      1.00      1.00        20
+washingdishes       0.95      1.00      0.98        20
+
+     accuracy                           0.87       196
+    macro avg       0.72      0.71      0.71       196
+ weighted avg       0.87      0.87      0.86       196

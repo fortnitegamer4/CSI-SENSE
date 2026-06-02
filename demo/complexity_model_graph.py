@@ -1,0 +1,369 @@
+import os
+import csv
+import pickle
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+from glob import glob
+from scipy.signal import stft
+from sklearn.preprocessing import StandardScaler
+from joblib import load
+
+MODEL_FILE = "csi_presence_model.joblib"
+
+WINDOW_SECONDS = 1.5
+OVERLAP = 0.5
+FORCED_FS = 100.0
+MAX_FREQ = 10.0
+
+FILE_FRAC_HIGH = 0.15
+FILE_MEAN_PROB = 0.5
+
+LABELS_MAP = {"vacant": 0, "stable": 1, "active": 1, "occupied": 1}
+INV_LABEL = {0: "VACANT", 1: "OCCUPIED"}
+
+
+def load_pkl(path):
+    with open(path, "rb") as f:
+        d = pickle.load(f)
+    return d["valid_csi"], d["valid_csi_timestmp_array"]
+
+
+def true_label_from_path(path):
+    parts = [p.lower() for p in path.split(os.sep)]
+    for p in reversed(parts):
+        if p in LABELS_MAP:
+            return LABELS_MAP[p]
+    return None
+
+
+def safe_fs_from_ts(ts):
+    if len(ts) >= 2:
+        dt = np.median(np.diff(ts))
+        if dt > 1.0:
+            dt /= 1000.0
+        fs = 1.0 / max(dt, 1e-12)
+        if fs < 5 or fs > 5000:
+            fs = FORCED_FS
+    else:
+        fs = FORCED_FS
+    return fs
+
+
+def extract_windows_features(csi, ts):
+    if csi.ndim != 2:
+        raise ValueError(f"Unexpected CSI shape: {csi.shape}")
+
+    if csi.shape[0] > csi.shape[1]:
+        csi = csi.T
+
+    _, n = csi.shape
+    if n < 4:
+        return np.zeros((0, 4)), np.zeros((0,))
+
+    fs = safe_fs_from_ts(ts)
+    win = max(16, int(round(WINDOW_SECONDS * fs)))
+    hop = max(1, int(round(win * (1.0 - OVERLAP))))
+
+    if n < win:
+        win = n
+        hop = n
+
+    feats = []
+    motion = []
+
+    for start in range(0, n - win + 1, hop):
+        end = start + win
+        seg = csi[:, start:end]
+        amp = np.abs(seg)
+        sig = amp.mean(axis=0).astype(float)
+
+        if not np.all(np.isfinite(sig)):
+            continue
+
+        try:
+            f, _, z = stft(sig, fs=fs, nperseg=min(64, len(sig)))
+        except Exception:
+            m = len(sig)
+            yf = np.abs(np.fft.rfft(sig - sig.mean())) ** 2
+            f = np.fft.rfftfreq(m, 1.0 / fs) if m > 1 else np.array([0.0])
+            z = np.zeros((len(f), m), dtype=complex)
+            z[:, 0:len(yf)] = np.atleast_2d(yf).T
+
+        p = np.abs(z) ** 2
+        mask = f <= MAX_FREQ
+        if not np.any(mask):
+            continue
+
+        p = p[mask]
+        fsel = f[mask]
+        total = p.sum() + 1e-12
+
+        low = float(p[fsel <= 0.5].sum() / total)
+        mid = float(p[(fsel > 0.5) & (fsel <= 2.5)].sum() / total)
+        high = float(p[fsel > 2.5].sum() / total)
+
+        pvec = p.sum(axis=1)
+        pvec = pvec / (pvec.sum() + 1e-12)
+        ent = float(-np.sum(pvec * np.log2(pvec + 1e-12)))
+
+        feats.append([low, mid, high, ent])
+        motion.append(mid + high)
+
+    return np.array(feats, dtype=float), np.array(motion, dtype=float)
+
+
+def classify_file(path, scaler, clf):
+    csi, ts = load_pkl(path)
+    feats, _ = extract_windows_features(csi, ts)
+
+    if feats.shape[0] == 0:
+        return None, None, None, 0
+
+    xs = scaler.transform(feats)
+
+    if hasattr(clf, "predict_proba"):
+        probs = clf.predict_proba(xs)
+        p_occ = probs[:, 1]
+    else:
+        preds = clf.predict(xs)
+        p_occ = (preds == 1).astype(float)
+
+    frac_high = float((p_occ >= 0.6).mean())
+    mean_prob = float(p_occ.mean())
+
+    pred = 1 if (frac_high >= FILE_FRAC_HIGH or mean_prob >= FILE_MEAN_PROB) else 0
+
+    return pred, mean_prob, frac_high, len(feats)
+
+
+def spectral_entropy(sig):
+    f, _, z = stft(sig, fs=FORCED_FS, nperseg=min(64, len(sig)))
+    p = np.abs(z) ** 2
+    mask = f <= MAX_FREQ
+    if not np.any(mask):
+        return 0.0
+
+    p = p[mask]
+    pvec = p.sum(axis=1)
+    pvec = pvec / (pvec.sum() + 1e-12)
+    return float(-np.sum(pvec * np.log2(pvec + 1e-12)))
+
+
+def complexity_features(path):
+    csi, ts = load_pkl(path)
+
+    if csi.ndim != 2:
+        raise ValueError(f"Bad CSI shape: {csi.shape}")
+
+    if csi.shape[0] > csi.shape[1]:
+        csi = csi.T
+
+    amp = np.abs(csi).astype(float)
+
+    good_rows = np.all(np.isfinite(amp), axis=1)
+    amp = amp[good_rows]
+
+    if amp.size == 0:
+        raise ValueError("No finite CSI values")
+
+    mean_amp = float(np.mean(amp))
+    attenuation_proxy = 1.0 / (mean_amp + 1e-9)
+
+    temporal_diff = np.abs(np.diff(amp, axis=1))
+    mean_temporal_change = float(np.mean(temporal_diff))
+
+    subcarrier_std = float(np.mean(np.std(amp, axis=0)))
+    time_std = float(np.mean(np.std(amp, axis=1)))
+
+    sig = amp.mean(axis=0)
+    ent = spectral_entropy(sig)
+
+    return [
+        attenuation_proxy,
+        mean_temporal_change,
+        subcarrier_std,
+        time_std,
+        ent,
+    ]
+
+
+def assign_complexities(files):
+    rows = []
+    valid_files = []
+
+    for f in files:
+        try:
+            rows.append(complexity_features(f))
+            valid_files.append(f)
+        except Exception as e:
+            print(f"[SKIP complexity] {f}: {e}")
+
+    vals = np.array(rows, dtype=float)
+    vals_scaled = StandardScaler().fit_transform(vals)
+
+    score = (
+        0.30 * vals_scaled[:, 0] +
+        0.25 * vals_scaled[:, 1] +
+        0.20 * vals_scaled[:, 2] +
+        0.15 * vals_scaled[:, 3] +
+        0.10 * vals_scaled[:, 4]
+    )
+
+    q1, q2 = np.percentile(score, [33.33, 66.67])
+
+    complexity = {}
+    score_map = {}
+
+    for f, s in zip(valid_files, score):
+        if s <= q1:
+            lab = "simple"
+        elif s <= q2:
+            lab = "moderate"
+        else:
+            lab = "complex"
+
+        complexity[os.path.abspath(f)] = lab
+        score_map[os.path.abspath(f)] = float(s)
+
+    return complexity, score_map
+
+
+def make_graph(summary, out_path):
+    labels = ["simple", "moderate", "complex"]
+    accs = [summary[x]["accuracy"] for x in labels]
+    counts = [summary[x]["total"] for x in labels]
+
+    x = np.arange(len(labels))
+
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    ax.bar(x, accs)
+
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("File-Level Accuracy")
+    ax.set_title("CSI-Sense Accuracy by Estimated Obstruction Complexity")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{lab.capitalize()}\n(n={counts[i]})" for i, lab in enumerate(labels)])
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+
+    for i, v in enumerate(accs):
+        ax.text(i, v + 0.025, f"{v:.3f}", ha="center", va="bottom", fontsize=11)
+
+    ax.text(
+        0.5, -0.20,
+        "Complexity is estimated from CSI distortion features, not manually labeled obstruction categories.",
+        ha="center",
+        va="center",
+        transform=ax.transAxes,
+        fontsize=9,
+    )
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=220, bbox_inches="tight")
+    print(f"[+] Saved graph: {out_path}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", required=True, help="Root folder containing .pkl files")
+    ap.add_argument("--model_path", default=MODEL_FILE)
+    ap.add_argument("--all_files", action="store_true", help="Evaluate all files, not just saved model test_files")
+    ap.add_argument("--csv_out", default="complexity_model_results.csv")
+    ap.add_argument("--graph_out", default="complexity_accuracy_graph.png")
+    args = ap.parse_args()
+
+    bundle = load(args.model_path)
+    scaler = bundle["scaler"]
+    clf = bundle["model"]
+
+    all_files = sorted(glob(os.path.join(args.root, "**", "*.pkl"), recursive=True))
+    all_files = [os.path.abspath(f) for f in all_files]
+
+    if not all_files:
+        print("No .pkl files found.")
+        return
+
+    complexity_map, score_map = assign_complexities(all_files)
+
+    if args.all_files:
+        eval_files = all_files
+        print("[*] Evaluating ALL files. This may include training files.")
+    else:
+        if "test_files" in bundle:
+            test_set = set(os.path.abspath(f) for f in bundle["test_files"])
+            eval_files = [f for f in all_files if f in test_set]
+            print(f"[*] Evaluating saved held-out test files only: {len(eval_files)}")
+            if not eval_files:
+                print("[!] No matching test files found. Use --all_files if your paths changed.")
+                return
+        else:
+            print("[!] Model has no test_files saved. Use --all_files.")
+            return
+
+    results = []
+
+    for f in eval_files:
+        actual = true_label_from_path(f)
+        if actual is None:
+            print(f"[SKIP label] Could not infer label from path: {f}")
+            continue
+
+        pred, mean_prob, frac_high, windows = classify_file(f, scaler, clf)
+        if pred is None:
+            print(f"[SKIP classify] No windows extracted: {f}")
+            continue
+
+        comp = complexity_map.get(os.path.abspath(f))
+        comp_score = score_map.get(os.path.abspath(f))
+
+        results.append({
+            "file": f,
+            "complexity": comp,
+            "complexity_score": comp_score,
+            "actual": actual,
+            "pred": pred,
+            "correct": int(actual == pred),
+            "mean_p_occ": mean_prob,
+            "frac_high": frac_high,
+            "windows": windows,
+        })
+
+    with open(args.csv_out, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "file", "complexity", "complexity_score",
+            "actual", "pred", "correct",
+            "mean_p_occ", "frac_high", "windows"
+        ])
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"[+] Saved CSV: {args.csv_out}")
+
+    summary = {}
+    for comp in ["simple", "moderate", "complex"]:
+        group = [r for r in results if r["complexity"] == comp]
+        total = len(group)
+        correct = sum(r["correct"] for r in group)
+        acc = correct / total if total else 0.0
+        summary[comp] = {"total": total, "correct": correct, "accuracy": acc}
+
+    print("\n===== ACCURACY BY ESTIMATED COMPLEXITY =====")
+    for comp in ["simple", "moderate", "complex"]:
+        s = summary[comp]
+        print(f"{comp.upper():8s}: {s['correct']}/{s['total']} = {s['accuracy']:.3f}")
+
+    make_graph(summary, args.graph_out)
+    print("\n===== CLASS BREAKDOWN BY ESTIMATED COMPLEXITY =====")
+    for comp in ["simple", "moderate", "complex"]:
+        group = [r for r in results if r["complexity"] == comp]
+        print(f"\n{comp.upper()}")
+
+        for cls_name, cls_val in [("vacant", 0), ("occupied", 1)]:
+            cls_group = [r for r in group if r["actual"] == cls_val]
+            total = len(cls_group)
+            correct = sum(r["correct"] for r in cls_group)
+            acc = correct / total if total else 0.0
+            print(f"  {cls_name:8s}: {correct}/{total} = {acc:.3f}")
+
+if __name__ == "__main__":
+    main()
