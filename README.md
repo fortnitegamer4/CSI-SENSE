@@ -1,10 +1,10 @@
-CSI-Sense
+**CSI-Sense**
 
 Detecting Presence Behind Obstructions for Search & Rescue Using WiFi CSI
 
 CSI-Sense is a low-cost WiFi sensing system that uses Channel State Information (CSI) to detect human presence behind obstructions such as doors, walls, and cluttered environments. The project explores how commodity WiFi hardware can assist search-and-rescue (SAR) operations by identifying motion and occupancy without requiring direct line-of-sight.
 
-Overview
+**Overview**
 
 Traditional search-and-rescue operations often require responders to physically enter potentially hazardous environments before determining whether victims are present. CSI-Sense investigates whether WiFi signals can be used as a non-invasive sensing modality for presence detection.
 
@@ -42,7 +42,7 @@ Processing
 Laptop/Desktop running Python
 
 
-Running the Project
+**Running the Project**
 
 To use CSI-Sense, first set up the Python environment and install the required dependencies. The project was developed using a virtual environment to keep package versions isolated.
 
