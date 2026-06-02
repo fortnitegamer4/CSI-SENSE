@@ -1,6 +1,6 @@
 **CSI-Sense**
 
-Detecting Presence Behind Obstructions for Search & Rescue Using WiFi CSI
+**Detecting Presence Behind Obstructions for Search & Rescue Using WiFi CSI**
 
 CSI-Sense is a low-cost WiFi sensing system that uses Channel State Information (CSI) to detect human presence behind obstructions such as doors, walls, and cluttered environments. The project explores how commodity WiFi hardware can assist search-and-rescue (SAR) operations by identifying motion and occupancy without requiring direct line-of-sight.
 
