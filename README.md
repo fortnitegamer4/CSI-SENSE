@@ -4,6 +4,12 @@
 
 CSI-Sense is a low-cost WiFi sensing system that uses Channel State Information (CSI) to detect human presence behind obstructions such as doors, walls, and cluttered environments. The project explores how commodity WiFi hardware can assist search-and-rescue (SAR) operations by identifying motion and occupancy without requiring direct line-of-sight.
 
+Proof-of-Concept Disclaimer
+
+CSI Sense is an exploratory research prototype developed to evaluate the technical feasibility of device-free presence detection using Wi-Fi Channel State Information. The system was designed to test signal-processing methods, feature extraction, model architecture, and real-time inference under limited and controlled conditions.
+
+This project is not a production-ready monitoring system, and its results should not be interpreted as evidence of reliable performance across different rooms, hardware configurations, users, or environmental conditions. Any synthetic, simulated, or augmented data used during development was intended only to test pipeline behavior and is identified separately from real-world measurements. Further data collection and validation would be required before practical deployment.
+
 **Overview**
 
 Traditional search-and-rescue operations often require responders to physically enter potentially hazardous environments before determining whether victims are present. CSI-Sense investigates whether WiFi signals can be used as a non-invasive sensing modality for presence detection.
